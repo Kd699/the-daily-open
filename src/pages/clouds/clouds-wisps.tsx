@@ -215,9 +215,19 @@ void main() {
   sky = mix(sky, uTop, smoothstep(0.45, 1.0, vUv.y));
   sky += (fbm(p * 2.0 + uSeed) - 0.5) * 0.02;
 
-  // Stars: one hash per cell, kept off the horizon band, gently twinkling.
-  float sh = hash12(floor(p * 190.0) + floor(uSeed));
-  float star = smoothstep(0.998, 1.0, sh);
+  // Stars: a tiny square per occupied cell, jittered so the lattice
+  // doesn't read. Filling the whole cell made 6px tiles; this is ~2px.
+  vec2 starCell = floor(p * 190.0);
+  vec2 starUv = fract(p * 190.0);
+  float sh = hash12(starCell + floor(uSeed));
+  vec2 starAt = 0.16 + 0.68 * vec2(
+    hash12(starCell + 17.0 + floor(uSeed)),
+    hash12(starCell + 41.0 + floor(uSeed))
+  );
+  vec2 starDelta = abs(starUv - starAt);
+  float star = smoothstep(0.998, 1.0, sh)
+    * step(starDelta.x, 0.16)
+    * step(starDelta.y, 0.16);
   float twinkle = 0.7 + 0.3 * sin(uTime * (0.8 + sh * 2.0) + sh * 43.0);
   sky += vec3(1.0, 0.98, 0.92)
     * star * twinkle
