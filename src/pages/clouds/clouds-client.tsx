@@ -7,16 +7,10 @@ import { lazy, Suspense } from "react";
 const CloudsScene = lazy(() => import("./clouds-scene"));
 
 export default function CloudsClient() {
+  // No loading state: hold black until the scene module lands, then jump
+  // straight in.
   return (
-    <Suspense
-      fallback={
-        <div className="flex h-[100dvh] w-full items-center justify-center bg-black">
-          <span className="text-[11px] uppercase tracking-[0.2em] text-white/40">
-            Loading sky…
-          </span>
-        </div>
-      }
-    >
+    <Suspense fallback={<div className="h-[100dvh] w-full bg-black" />}>
       <CloudsScene />
     </Suspense>
   );
