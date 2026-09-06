@@ -21,7 +21,7 @@ import type { CloudsQualityPreset } from "@takram/three-clouds";
 // wisps on light blue, dusk broods — fuller and denser, the storm end of
 // the range — and night strips the sky back so the stars own it.
 export const SKY_PRESETS = {
-  "Pre-dawn": { hour: 4.3, exposure: 40, heading: 55, stars: 3, mood: { fullness: 0.8, intensity: 0.8 } },
+  "Pre-dawn": { hour: 4.3, exposure: 40, heading: 55, stars: 3, mood: { fullness: 1.3, intensity: 0.9 } },
   Sunrise: { hour: 5.4, exposure: 14, heading: 60, stars: 0, mood: { fullness: 1.7, intensity: 0.9 } },
   Morning: { hour: 9, exposure: 8, heading: 35, stars: 0, mood: { fullness: 0.9, intensity: 0.85 } },
   Midday: { hour: 13, exposure: 6.5, heading: 35, stars: 0, mood: { fullness: 1, intensity: 1 } },
@@ -112,7 +112,7 @@ function raw(hex: string): Color {
 export const SKY_PALETTES = (
   [
     { hour: 0.5, top: "#16233f", mid: "#1e2d4d", bot: "#2c3c60", tint: "#4d5c82" }, // night
-    { hour: 4.3, top: "#3d4468", mid: "#4d5480", bot: "#6a6f95", tint: "#7d84a8" }, // pre-dawn
+    { hour: 4.3, top: "#3d4468", mid: "#5b5787", bot: "#b07f97", tint: "#a08bb0" }, // pre-dawn — pink glow low on indigo
     { hour: 5.4, top: "#93a5cd", mid: "#eed3b7", bot: "#f5bb86", tint: "#fff1de" }, // sunrise
     { hour: 9, top: "#8abbec", mid: "#bcd9f5", bot: "#e8f3fc", tint: "#ffffff" }, // morning
     { hour: 13, top: "#6fb4ec", mid: "#a9d3f5", bot: "#ddeffb", tint: "#ffffff" }, // midday

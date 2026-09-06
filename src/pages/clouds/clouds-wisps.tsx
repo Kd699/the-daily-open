@@ -100,6 +100,7 @@ uniform float uFullness;
 uniform float uIntensity;
 uniform float uSize;
 uniform float uSpeed;
+uniform float uMorph;
 uniform vec3 uTop;
 uniform vec3 uMid;
 uniform vec3 uBot;
@@ -148,7 +149,9 @@ float wisp(vec2 p, vec2 anchor, float scale, float stretch, float seed, float dr
   q /= max(scale, 1e-3);
   float d = length(q * vec2(1.0, stretch));
   if (d > 1.6) return 0.0;
-  vec2 flow = vec2(uTime * 0.010, -uTime * 0.006);
+  // uMorph advances only while a sky switch is tweening, so the wisps'
+  // internal shapes re-form a little as the light changes, then hold.
+  vec2 flow = vec2(uTime * 0.010 + uMorph * 0.35, -uTime * 0.006 - uMorph * 0.2);
   float n = fbm(q * vec2(1.3, 2.4) + seed + flow);
   n += 0.5 * fbm(q * vec2(3.0, 5.2) + vec2(-seed, seed * 0.7) + flow * 1.7);
   n *= 0.66;
@@ -191,7 +194,9 @@ void main() {
   // lighter than the sky — the reference frames' barely-there night decks.
   vec3 lit = mix(vec3(0.99), uTint, 0.8);
   vec3 shade = mix(lit, uMid, 0.4);
-  float drift = uTime * (0.002 + uSpeed * 0.0016);
+  // uMorph also nudges the drift, so a switch slides each wisp a touch —
+  // per-wisp rates below keep them from moving as one sheet.
+  float drift = uTime * (0.002 + uSpeed * 0.0016) + uMorph * 0.06;
   vec3 col = sky;
 
   vec2 anchors[4];
@@ -229,6 +234,7 @@ function WispsQuad({ dials }: { dials: CloudDials }) {
   const materialRef = useRef<ShaderMaterial>(null);
   const size = useThree((s) => s.size);
   const tween = useRef<Tween | null>(null);
+  const morph = useRef(0);
   const dialsRef = useRef(dials);
   dialsRef.current = dials;
 
@@ -251,6 +257,7 @@ function WispsQuad({ dials }: { dials: CloudDials }) {
       uIntensity: { value: 0 },
       uSize: { value: 0 },
       uSpeed: { value: 0 },
+      uMorph: { value: 0 },
       uTop: { value: new Color() },
       uMid: { value: new Color() },
       uBot: { value: new Color() },
@@ -314,6 +321,15 @@ function WispsQuad({ dials }: { dials: CloudDials }) {
     tw.t += delta;
     const a = evalTween(tw);
 
+    // A sky switch reshuffles the clouds a LITTLE: while the tween runs,
+    // morph accumulates at a rate shaped like sin(π·phase) — zero at both
+    // ends, a breath in the middle — sliding each wisp's position and
+    // noise domain slightly, then holding still. (A deliberate divergence
+    // from upstream's perfectly still switches.) Reduced motion never
+    // advances it: the snapped tween sits past LONGEST, where sin is 0.
+    const phase = Math.min(1, tw.t / LONGEST);
+    morph.current += Math.sin(Math.PI * phase) * delta * 0.5;
+
     paletteForHour(a.hour, palette);
     // Write into the MATERIAL's uniform map, not the memoised record: R3F
     // clones the uniforms prop into fresh { value } wrappers on mount, so
@@ -328,6 +344,7 @@ function WispsQuad({ dials }: { dials: CloudDials }) {
     u.uIntensity.value = a.intensity;
     u.uSize.value = a.size;
     u.uSpeed.value = d.speed;
+    u.uMorph.value = morph.current;
     (u.uTop.value as Color).copy(palette.top);
     (u.uMid.value as Color).copy(palette.mid);
     (u.uBot.value as Color).copy(palette.bot);
