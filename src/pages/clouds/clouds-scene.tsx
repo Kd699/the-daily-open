@@ -24,20 +24,20 @@
 // the default and the easter egg: the visitor's own clock is the solar hour,
 // interpolating between the neighbouring stops.
 //
-// SWITCHING SKIES: ONE EASED BREATH, NOT A FLIGHT. Every animated quantity
-// — solar hour, exposure, heading/pitch, cloud coverage/density/scale, star
+// SWITCHING SKIES: THE DAY TURNS OVER A STILL SKY. Every animated quantity
+// — solar hour, exposure, heading/pitch, cloud coverage/density, star
 // brightness — is evaluated per frame from ONE fixed-duration tween and
 // written STRAIGHT ONTO the CloudsEffect / renderer / camera (zero React
 // re-renders per frame). Tweens, not damped lerp, on purpose: exponential
-// smoothing moves FASTEST in its first frame — the old cut read as zooming
+// smoothing moves FASTEST in its first frame — an early cut read as zooming
 // through space — where an ease-in-out starts still, breathes through the
-// middle and lands softly. Two durations off one clock: the scene (sun,
-// light, camera) crosses in ~2s, the deck fades over ~3.5s so wisps are
-// still quietly appearing and dissolving after the light has settled. The
-// only drift is a whisper of weather scroll that swells mid-fade and calms
-// to zero — clouds moving across, not racing. Hour and heading interpolate
-// circularly (midday→night rolls forward, not back through morning).
-// Honours prefers-reduced-motion by snapping.
+// middle and lands softly. Three tempos off one clock (see TWEEN_KEYS):
+// light ~2.5s, camera ~5s, cloud fade ~4s. And the clouds NEVER MOVE on a
+// switch: no weather scroll beyond the dialled wind, no mood-driven
+// rescale — the same clouds hold their places while the time of day
+// changes over them. Hour and heading interpolate circularly
+// (midday→night rolls forward, not back through morning). Honours
+// prefers-reduced-motion by snapping.
 //
 // THE CAMERA IS A DIAL, NOT A GESTURE. No OrbitControls: the view is fixed,
 // a postcard rather than a fly-through, and the only way to move it is the
@@ -63,8 +63,8 @@ import {
   SMAA,
   ToneMapping,
 } from "@react-three/postprocessing";
-import { ToneMappingMode } from "postprocessing";
-import { Vector3 } from "three";
+import { BlendFunction, Effect, ToneMappingMode } from "postprocessing";
+import { Color, Uniform, Vector3 } from "three";
 import { DEFAULT_STARS_DATA_URL } from "@takram/three-atmosphere";
 import {
   AerialPerspective,
@@ -83,10 +83,41 @@ import {
   SKY_PRESETS,
   ease,
   liveSky,
+  paletteForHour,
   wrapDelta,
   type CloudDials,
+  type SkyPalette,
   type SkyStop,
 } from "./sky";
+
+// THE HORIZON WASH. ground={false} removes the drawn ellipsoid, but the
+// scattering model still darkens below the geometric horizon, leaving a
+// tonal seam across the frame. Rather than fight the physics, the bottom
+// band is treated as design: a wash of the current sky's horizon colour
+// (the same SKY_PALETTES the wisps engine paints from) blended over the
+// last stretch of the frame, solid below the seam and gone by mid-frame —
+// each sky ends in its own single gradient colour, reference-style. Runs
+// after ToneMapping, inside the composer's linear space, so the wash
+// colour is fed through convertSRGBToLinear before it goes in.
+const HORIZON_WASH_FRAGMENT = /* glsl */ `
+  uniform vec3 washColor;
+  void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
+    float wash = 1.0 - smoothstep(0.14, 0.44, uv.y);
+    outputColor = vec4(mix(inputColor.rgb, washColor, wash), inputColor.a);
+  }
+`;
+
+class HorizonWashEffect extends Effect {
+  constructor() {
+    super("HorizonWash", HORIZON_WASH_FRAGMENT, {
+      blendFunction: BlendFunction.NORMAL,
+      uniforms: new Map([["washColor", new Uniform(new Color())]]),
+    });
+  }
+  get washColor(): Color {
+    return this.uniforms.get("washColor")!.value as Color;
+  }
+}
 
 /** Solar time → a real Date for Atmosphere.updateByDate. The sun's direction
  *  comes from the date, so "1pm at longitude 30°E" must be handed over as
@@ -102,34 +133,39 @@ function sunDate(hours: number, longitude: number): Date {
 // marks the circular members; epsilon is how far a target must move before
 // a new tween starts (Live's clock creeps ~0.017h/min — restarting on
 // every creep would turn the tween back into the exponential it replaced).
+// seconds is each quantity's OWN duration, three tempos on one clock: the
+// LIGHT (hour, exposure, stars) crosses in ~2.5s so the day visibly turns;
+// the CAMERA drifts over ~5s — a slow deliberate pan, never a whip; the
+// DECK (coverage, density) fades over ~4s, and it only FADES — nothing in
+// a preset switch moves a cloud's position (see the frame loop).
 const TWEEN_KEYS = {
-  hour: { period: 24, epsilon: 0.05 },
-  exposure: { epsilon: 0.1 },
-  heading: { period: 360, epsilon: 0.5 },
-  pitch: { epsilon: 0.25 },
-  originE: { epsilon: 5 },
-  originN: { epsilon: 5 },
-  stars: { epsilon: 0.05 },
-  coverage: { epsilon: 0.003 },
-  density: { epsilon: 0.001 },
-  repeat: { epsilon: 0.5 },
+  hour: { period: 24, epsilon: 0.05, seconds: 2.5 },
+  exposure: { epsilon: 0.1, seconds: 2.5 },
+  heading: { period: 360, epsilon: 0.5, seconds: 5 },
+  pitch: { epsilon: 0.25, seconds: 5 },
+  originE: { epsilon: 5, seconds: 5 },
+  originN: { epsilon: 5, seconds: 5 },
+  stars: { epsilon: 0.05, seconds: 2.5 },
+  coverage: { epsilon: 0.003, seconds: 4 },
+  density: { epsilon: 0.001, seconds: 4 },
+  repeat: { epsilon: 0.5, seconds: 4 },
 } as const;
 type TweenKey = keyof typeof TWEEN_KEYS;
 type SkyVector = Record<TweenKey, number>;
 
-// The scene crosses in a breath; the deck fades a little longer, so wisps
-// are still appearing and dissolving after the light has settled.
-const SCENE_SECONDS = 2;
-const CLOUD_SECONDS = 3.5;
-const CLOUD_KEYS: readonly TweenKey[] = ["coverage", "density", "repeat"];
+const LONGEST_SECONDS = Math.max(
+  ...Object.values(TWEEN_KEYS).map((k) => k.seconds)
+);
 
 type Tween = { t: number; from: SkyVector; to: SkyVector; fromRest: boolean };
 
 function evalTween(tw: Tween): SkyVector {
   const out = {} as SkyVector;
   for (const key of Object.keys(TWEEN_KEYS) as TweenKey[]) {
-    const { period } = TWEEN_KEYS[key] as { period?: number };
-    const seconds = CLOUD_KEYS.includes(key) ? CLOUD_SECONDS : SCENE_SECONDS;
+    const { period, seconds } = TWEEN_KEYS[key] as {
+      period?: number;
+      seconds: number;
+    };
     const eased = ease(Math.min(1, tw.t / seconds), tw.fromRest);
     const delta = period
       ? wrapDelta(tw.from[key], tw.to[key], period)
@@ -145,7 +181,11 @@ function Scene({ dials }: { dials: CloudDials }) {
   const atmosphereRef = useRef<AtmosphereApi>(null);
   const starsRef = useRef<StarsImpl>(null);
   const [clouds, setClouds] = useState<CloudsEffect | null>(null);
-
+  const wash = useMemo(() => new HorizonWashEffect(), []);
+  const washPalette = useMemo<SkyPalette>(
+    () => ({ top: new Color(), mid: new Color(), bot: new Color(), tint: new Color() }),
+    []
+  );
   // Snap instead of glide for anyone who asked the OS for less motion.
   const reducedMotion = useMemo(
     () =>
@@ -175,7 +215,11 @@ function Scene({ dials }: { dials: CloudDials }) {
     const sky: SkyStop = d.sky === "Live" ? liveSky() : SKY_PRESETS[d.sky];
 
     // Targets: the preset's mood rides ON the user's sliders, so the same
-    // hand-set character reads calm at midday and stormy at dusk.
+    // hand-set character reads calm at midday and stormy at dusk. Moods only
+    // touch coverage and density — quantities that fade a cloud IN PLACE.
+    // repeat (cloud size/position on the weather map) is the user's slider
+    // alone: a preset switch changes the time of day over the clouds that
+    // are there, it does not rearrange the sky.
     const target: SkyVector = {
       hour: sky.hour,
       exposure: sky.exposure,
@@ -185,7 +229,7 @@ function Scene({ dials }: { dials: CloudDials }) {
       originN: d.view.origin.y,
       coverage: Math.min(1, d.fullness * 0.5 * sky.mood.fullness),
       density: Math.min(0.3, d.intensity * 0.15 * sky.mood.intensity),
-      repeat: 60 + (1 - Math.min(1, d.size * sky.mood.size)) * 140,
+      repeat: 60 + (1 - Math.min(1, d.size)) * 140,
       stars: sky.stars,
     };
 
@@ -196,7 +240,7 @@ function Scene({ dials }: { dials: CloudDials }) {
     const previous =
       tween.current == null || reducedMotion
         ? (tween.current = {
-            t: CLOUD_SECONDS + 1,
+            t: LONGEST_SECONDS + 1,
             from: { ...target },
             to: { ...target },
             fromRest: true,
@@ -218,7 +262,7 @@ function Scene({ dials }: { dials: CloudDials }) {
             t: 0,
             from: evalTween(previous),
             to: { ...target },
-            fromRest: previous.t >= CLOUD_SECONDS,
+            fromRest: previous.t >= LONGEST_SECONDS,
           })
         : previous;
     tw.t += delta;
@@ -229,16 +273,19 @@ function Scene({ dials }: { dials: CloudDials }) {
     atmosphereRef.current?.updateByDate(sunDate(a.hour, d.view.longitude));
     if (starsRef.current) starsRef.current.material.intensity = a.stars;
 
-    // Clouds — written straight onto the effect. The only motion on top of
-    // the dialled wind is a whisper of weather scroll shaped like the fade
-    // itself (sin(πt) — nothing at the ends, a breath in the middle), so a
-    // switch reads as wisps drifting across while they appear and dissolve,
-    // and the sky is perfectly still again the moment it has arrived.
+    // The horizon wash follows the SMOOTHED hour, so during a preset switch
+    // the bottom band crossfades in step with the light instead of snapping.
+    paletteForHour(a.hour, washPalette);
+    wash.washColor.copy(washPalette.bot).convertSRGBToLinear();
+
+    // Clouds — written straight onto the effect. NO added motion on a
+    // preset switch: the weather map never scrolls faster than the dialled
+    // wind and never rescales from a mood, so the clouds that were in the
+    // sky stay exactly where they are while the light and their density
+    // change around them — a new time of day over the SAME sky.
     if (clouds) {
-      const cloudPhase = Math.min(1, tw.t / CLOUD_SECONDS);
-      const drift = Math.sin(Math.PI * cloudPhase) * 1.5e-5;
       clouds.coverage = a.coverage;
-      clouds.localWeatherVelocity.set(d.speed * 1e-5 + drift, drift * 0.3);
+      clouds.localWeatherVelocity.set(d.speed * 1e-5, 0);
       clouds.localWeatherRepeat.setScalar(a.repeat);
       const layer = clouds.cloudLayers[0];
       if (layer) layer.densityScale = a.density;
@@ -311,6 +358,9 @@ function Scene({ dials }: { dials: CloudDials }) {
             sampling atmosphere and the sky just continues. */}
         <AerialPerspective sky sunLight skyLight ground={false} />
         <ToneMapping mode={ToneMappingMode.AGX} />
+        {/* After tone mapping: paints the palette's horizon colour over the
+            bottom band, erasing the below-horizon scattering seam. */}
+        <primitive object={wash} />
         <SMAA />
       </EffectComposer>
     </Atmosphere>

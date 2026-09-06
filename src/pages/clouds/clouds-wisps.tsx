@@ -22,73 +22,23 @@
 
 import { useMemo, useRef } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Color, LinearSRGBColorSpace, type ShaderMaterial } from "three";
+import { Color, type ShaderMaterial } from "three";
 import {
   SKY_PRESETS,
   ease,
   liveSky,
+  paletteForHour,
   wrapDelta,
   type CloudDials,
   type SkyStop,
 } from "./sky";
 
-// Palettes keyed by SOLAR HOUR (each preset's hour), blended around the
-// clock, so a sky is a colour recipe: zenith, mid-sky, horizon, cloud tint.
-// Tuned to the references the sky was built against — sunrise a peach-on-
-// lavender gradient, morning a light airy blue, dusk purple over ember.
-/** Hex → Color with NO working-space conversion. The shader writes
- *  gl_FragColor raw (no colorspace_fragment chunk), so the whole painting
- *  is done in display sRGB — letting three convert these to linear on set
- *  would land them on screen darker and oversaturated. */
-function raw(hex: string): Color {
-  return new Color().setStyle(hex, LinearSRGBColorSpace);
-}
-
-const PALETTES = (
-  [
-    { hour: 0.5, top: "#04060f", mid: "#0a1124", bot: "#16203c", tint: "#4d5680" }, // night
-    { hour: 4.3, top: "#0d1233", mid: "#2a3260", bot: "#7a6274", tint: "#8a7f9f" }, // pre-dawn
-    { hour: 5.4, top: "#8fa8cf", mid: "#eeb0a4", bot: "#f9c08a", tint: "#ffd9b8" }, // sunrise
-    { hour: 9, top: "#7db3e8", mid: "#aacdf1", bot: "#e3f0fa", tint: "#ffffff" }, // morning
-    { hour: 13, top: "#4b96e0", mid: "#8cbdec", bot: "#d8e9f8", tint: "#ffffff" }, // midday
-    { hour: 16.5, top: "#5b9bd8", mid: "#a5c8e8", bot: "#eee2c8", tint: "#fff4e0" }, // afternoon
-    { hour: 19.0, top: "#45568f", mid: "#c98ba0", bot: "#f5a25e", tint: "#ffc9a0" }, // sunset
-    { hour: 19.6, top: "#23224a", mid: "#63426f", bot: "#d06a44", tint: "#c193ab" }, // dusk
-  ] as const
-)
-  .map((stop) => ({
-    hour: stop.hour,
-    top: raw(stop.top),
-    mid: raw(stop.mid),
-    bot: raw(stop.bot),
-    tint: raw(stop.tint),
-  }))
-  .sort((a, b) => a.hour - b.hour);
-
-/** Blend the two palettes bracketing this solar hour (wrapping midnight).
- *  smoothstep on the fraction keeps each stop's character holding for a
- *  while instead of the whole day being one long crossfade. */
-function paletteForHour(
-  hour: number,
-  out: { top: Color; mid: Color; bot: Color; tint: Color }
-) {
-  let before = PALETTES[PALETTES.length - 1];
-  let after = PALETTES[0];
-  for (const stop of PALETTES) {
-    if (stop.hour <= hour) before = stop;
-    if (stop.hour > hour) {
-      after = stop;
-      break;
-    }
-  }
-  const span = (after.hour - before.hour + 24) % 24 || 24;
-  const t = ((hour - before.hour + 24) % 24) / span;
-  const s = t * t * (3 - 2 * t);
-  out.top.copy(before.top).lerp(after.top, s);
-  out.mid.copy(before.mid).lerp(after.mid, s);
-  out.bot.copy(before.bot).lerp(after.bot, s);
-  out.tint.copy(before.tint).lerp(after.tint, s);
-}
+// The palettes live in ./sky.ts (SKY_PALETTES) so BOTH engines paint from
+// the same recipes — the wisps sky is made of them entirely, and the
+// volumetric engine borrows the horizon colour for its wash. They are
+// display-referred sRGB: this shader writes gl_FragColor raw (no
+// colorspace_fragment chunk), so the numbers land on screen exactly as
+// authored.
 
 // The wisps' own tween vector — same machinery as the volumetric engine's,
 // smaller vocabulary: no camera, no exposure (palettes carry the light).
@@ -236,7 +186,10 @@ void main() {
 
   // Wisps — a few only, distanced apart. Fullness fades extras in one at a
   // time; each drifts at its own rate so the sky never moves as one sheet.
-  vec3 lit = mix(vec3(0.985), uTint, 0.6);
+  // The tint carries most of the cloud colour (0.8): day tints are white so
+  // nothing changes, but night's navy tint keeps the clouds only a shade
+  // lighter than the sky — the reference frames' barely-there night decks.
+  vec3 lit = mix(vec3(0.99), uTint, 0.8);
   vec3 shade = mix(lit, uMid, 0.4);
   float drift = uTime * (0.002 + uSpeed * 0.0016);
   vec3 col = sky;
@@ -319,9 +272,12 @@ function WispsQuad({ dials }: { dials: CloudDials }) {
     const target: Vec = {
       hour: sky.hour,
       stars: sky.stars,
+      // Moods touch only fullness/intensity — fades in place. size is the
+      // user's slider alone: scaling a wisp moves its whole silhouette, and
+      // a preset switch must not rearrange the sky (see sky.ts).
       fullness: Math.min(1.7, d.fullness * sky.mood.fullness),
       intensity: Math.min(1.7, d.intensity * sky.mood.intensity),
-      size: Math.min(1.3, d.size * sky.mood.size),
+      size: Math.min(1.3, d.size),
     };
 
     // Same retarget rules as the volumetric engine: only when a target
